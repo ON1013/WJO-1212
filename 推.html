@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>主播分類</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    header { display: flex; gap: 12px; margin-bottom: 16px; justify-content: center; }
+    form { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    input, button { padding: 8px 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ccc; padding: 8px; }
+    th { background: #f5f5f5; }
+    .tag { display: inline-block; padding: 2px 6px; background: #eef; border-radius: 4px; }
+    .hint { margin-top: 4px; color: #666; font-size: 13px; }
+    .del-btn { margin-left: 6px; padding: 4px 6px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <input id="search" type="search" placeholder="輸入名稱或類別關鍵字（可同時輸入多個，用空白分隔）" />
+    <button id="resetSearch">清除篩選</button>
+  </header>
+
+  <section>
+    <h3>新增主播（輸入順序：名稱 → 類別 → 連結）</h3>
+    <form id="anchorForm">
+      <input id="anchorName" required placeholder="名稱" />
+      <input id="anchorCategory" list="categoryList" required placeholder="類別 (可直接新建)" />
+      <datalist id="categoryList"></datalist>
+      <input id="anchorLink" required placeholder="影片連結 (含 http/https)" />
+      <button type="submit">新增主播</button>
+    </form>
+    <div class="hint">類別會自動建立。</div>
+  </section>
+
+  <section>
+    <h3>列表（同名主播會合併，列出多個類別與連結）</h3>
+    <div style="margin: 8px 0;">
+      <button id="sortByName">依名稱排列</button>
+      <button id="sortByCategory">依類別排列</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>名稱</th><th>類別</th><th>影片連結</th></tr>
+      </thead>
+      <tbody id="anchorTable"></tbody>
+    </table>
+  </section>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+
+    // 🔹 你的 Firebase config
+    const firebaseConfig = {
+      apiKey: "AIzaSyAes1VeIHOe6pwvfTEG1KgbKrV8wSl-UgI",
+      authDomain: "wjo-1212.firebaseapp.com",
+      projectId: "wjo-1212",
+      storageBucket: "wjo-1212.firebasestorage.app",
+      messagingSenderId: "905196221982",
+      appId: "1:905196221982:web:b37082206e000b8280a00f",
+      measurementId: "G-TP77PBY465"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // Firestore collections
+    const categoriesCol = collection(db, 'categories');
+    const anchorsCol = collection(db, 'anchors');
+
+    // DOM
+    const anchorForm = document.getElementById('anchorForm');
+    const anchorName = document.getElementById('anchorName');
+    const anchorCategory = document.getElementById('anchorCategory');
+    const categoryList = document.getElementById('categoryList');
+    const anchorLink = document.getElementById('anchorLink');
+    const anchorTable = document.getElementById('anchorTable');
+    const searchInput = document.getElementById('search');
+    const resetSearch = document.getElementById('resetSearch');
+    const sortByNameBtn = document.getElementById('sortByName');
+    const sortByCategoryBtn = document.getElementById('sortByCategory');
+    let sortMode = 'name';
+
+    let categories = [];
+    let anchors = [];
+
+    // 渲染類別選單
+    function renderCategoryOptions() {
+      categoryList.innerHTML = '';
+      categories.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        categoryList.appendChild(opt);
+      });
+    }
+
+    function getTokens() {
+      return searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    }
+
+    function renderAnchors() {
+      const tokens = getTokens();
+      anchorTable.innerHTML = '';
+
+      if (sortMode === 'name') {
+        const grouped = new Map();
+        anchors.forEach((a, idx) => {
+          if (!grouped.has(a.name)) grouped.set(a.name, []);
+          grouped.get(a.name).push({ idx, category: a.category, link: a.link, id: a.id });
+        });
+
+        [...grouped.entries()]
+          .filter(([name, list]) => {
+            if (!tokens.length) return true;
+            const nameLower = name.toLowerCase();
+            const categoriesLower = [...new Set(list.map(i => i.category.toLowerCase()))];
+            return tokens.every(t => nameLower.includes(t) || categoriesLower.some(c => c.includes(t)));
+          })
+          .forEach(([name, list]) => {
+            const cats = [...new Set(list.map(i => i.category))]
+              .map(c => `<span class="tag">${c}</span>`).join(' ');
+            const links = list
+              .map(i => `
+                <div>
+                  <a href="${i.link}" target="_blank" rel="noopener noreferrer">${i.link}</a>
+                  <button class="del-btn" onclick="deleteAnchor('${i.id}')">刪除</button>
+                </div>
+              `).join('');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${name}</td><td>${cats}</td><td>${links}</td>`;
+            anchorTable.appendChild(tr);
+          });
+      } else {
+        const grouped = new Map();
+        anchors.forEach((a, idx) => {
+          if (!grouped.has(a.category)) grouped.set(a.category, []);
+          grouped.get(a.category).push({ idx, name: a.name, link: a.link, id: a.id });
+        });
+
+        [...grouped.entries()]
+          .filter(([cat, list]) => {
+            if (!tokens.length) return true;
+            const catLower = cat.toLowerCase();
+            const namesLower = [...new Set(list.map(i => i.name.toLowerCase()))];
+            return tokens.every(t => catLower.includes(t) || namesLower.some(n => n.includes(t)));
+          })
+          .forEach(([cat, list]) => {
+            const names = [...new Set(list.map(i => i.name))].map(n => `<span class="tag">${n}</span>`).join(' ');
+            const links = list.map(i => `
+              <div>
+                ${i.name}：
+                <a href="${i.link}" target="_blank" rel="noopener noreferrer">${i.link}</a>
+                <button class="del-btn" onclick="deleteAnchor('${i.id}')">刪除</button>
+              </div>
+            `).join('');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${names}</td><td><span class="tag">${cat}</span></td><td>${links}</td>`;
+            anchorTable.appendChild(tr);
+          });
+      }
+    }
+
+    // 刪除
+    window.deleteAnchor = async function(id) {
+      if (!id) return;
+      const anchorDoc = doc(db, 'anchors', id);
+      if (confirm('確定刪除這個主播？')) {
+        await deleteDoc(anchorDoc);
+      }
+    }
+
+    // 監聽 Firestore
+    onSnapshot(categoriesCol, snapshot => {
+      categories = snapshot.docs.map(doc => doc.data().name);
+      renderCategoryOptions();
+    });
+
+    onSnapshot(anchorsCol, snapshot => {
+      anchors = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      renderAnchors();
+    });
+
+    // 新增主播 / 類別
+    anchorForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const name = anchorName.value.trim();
+      const category = anchorCategory.value.trim();
+      const link = anchorLink.value.trim();
+      if (!name || !category || !link) return;
+
+      if (!categories.includes(category)) {
+        await addDoc(categoriesCol, { name: category });
+      }
+
+      await addDoc(anchorsCol, { name, category, link });
+      anchorName.value = '';
+      anchorCategory.value = '';
+      anchorLink.value = '';
+    });
+
+    // 搜尋 / 重置
+    searchInput.addEventListener('input', renderAnchors);
+    resetSearch.addEventListener('click', () => { searchInput.value = ''; renderAnchors(); });
+
+    // 排序
+    sortByNameBtn.addEventListener('click', () => { sortMode = 'name'; renderAnchors(); });
+    sortByCategoryBtn.addEventListener('click', () => { sortMode = 'category'; renderAnchors(); });
+  </script>
+</body>
+</html>
